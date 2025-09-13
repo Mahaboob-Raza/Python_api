@@ -8,6 +8,10 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 
 app = FastAPI(title="Timetable GA Scheduler")
 
+@app.get("/")
+def root():
+    return {"status": "ok"}
+
 # ---------------------------
 # Request payload models
 # ---------------------------
