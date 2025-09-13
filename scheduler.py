@@ -1,7 +1,12 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from typing import List, Dict, Optional
-import random, copy, numpy as np, time, logging, re
+import random
+import copy
+import numpy as np
+import time
+import logging
+import re
 from collections import defaultdict
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -19,7 +24,7 @@ class SubjectSpec(BaseModel):
     name: str
     type: str  # 'theory' or 'lab'
     hours_per_week: Optional[int] = None
-    rooms: Optional[List[str]] = None  # optional: restrict subject to these rooms
+    rooms: Optional[List[str]] = None
 
 class FacultySpec(BaseModel):
     name: str
@@ -60,54 +65,40 @@ def initials(name: str) -> str:
     return "".join([p[0].upper() for p in parts])
 
 # ---------------------------
-# Option builders (strict lab mapping)
+# Option builders
 # ---------------------------
 def build_options(subjects, faculty, theory_rooms, lab_rooms):
-    """
-    Build options for theory and lab sessions.
-    - Theory subjects → all theory rooms.
-    - Lab subjects → only allowed in their specified lab(s).
-        * If SubjectSpec.rooms is set → use only those.
-        * Else → filter lab_rooms by subject name (e.g., OS → OS Lab).
-        * If no match → fallback to all lab_rooms (but only labs, not theories).
-    """
     fac_map = {f["name"]: set(f["subjects"]) for f in faculty}
     theory, labs = [], []
 
-    def room_likely_for_subject(room_name: str, subj_name: str):
+    def room_likely_for_subject(room_name: str, subj_name: str) -> bool:
         rn = room_name.lower()
         sn = subj_name.lower()
-        if sn in rn:  # direct name match
-            return True
-        if f"for {sn}" in rn:  # e.g., "Lab for AI"
-            return True
-        return False
+        return sn in rn or f"for {sn}" in rn
 
     for subj in subjects:
         subj_name = subj["name"]
         for fac, subs in fac_map.items():
-            if subj_name in subs:
-                if subj["type"] == "theory":
-                    for room in theory_rooms:
-                        theory.append({"type": "theory", "subject": subj_name, "faculty": fac, "room": room})
-                else:
-                    if subj.get("rooms"):
-                        allowed = subj["rooms"]
-                    else:
-                        allowed = [r for r in lab_rooms if room_likely_for_subject(r, subj_name)]
-                        if not allowed:  # fallback only if no match found
-                            allowed = lab_rooms
-                    for room in allowed:
-                        labs.append({"type": "lab", "subject": subj_name, "faculty": fac, "room": room})
+            if subj_name not in subs:
+                continue
+            if subj["type"] == "theory":
+                for room in theory_rooms:
+                    theory.append({"type": "theory", "subject": subj_name, "faculty": fac, "room": room})
+            else:
+                allowed = subj.get("rooms") or [r for r in lab_rooms if room_likely_for_subject(r, subj_name)]
+                if not allowed:
+                    allowed = lab_rooms[:]
+                for room in allowed:
+                    labs.append({"type": "lab", "subject": subj_name, "faculty": fac, "room": room})
     return theory, labs
 
 # ---------------------------
 # Bitmask helpers
 # ---------------------------
-def slots_mask(start:int, length:int):
+def slots_mask(start:int, length:int) -> int:
     return ((1 << length) - 1) << start
 
-def single_slot_mask(s:int):
+def single_slot_mask(s:int) -> int:
     return 1 << s
 
 # ---------------------------
@@ -138,32 +129,28 @@ def reserve_slots(occ_map, key, day, mask):
     occ_map[key][day] |= mask
 
 def is_free(occ_map, key, day, mask):
-    if key not in occ_map:
-        return True
-    return (occ_map[key][day] & mask) == 0
+    return key not in occ_map or (occ_map[key][day] & mask) == 0
 
 # ---------------------------
 # Individual generator
 # ---------------------------
-def generate_individual(sections, lab_subjects, th_opts, lab_opts, subject_expected_map, seed=None):
-    if seed is not None:
-        random.seed(seed)
-
+def generate_individual(sections, lab_subjects, th_opts, lab_opts, subject_expected_map):
     fac_busy, room_busy = create_occupancy()
     indiv = {sec: make_empty_grid() for sec in sections}
+
     lab_by_subject = {subj: [l for l in lab_opts if l["subject"] == subj] for subj in lab_subjects}
     per_section_counts = {sec: defaultdict(int) for sec in sections}
 
-    # Place labs first
+    # Place labs
     for sec in sections:
         for lsub in lab_subjects:
-            choices = lab_by_subject[lsub]
+            choices = lab_by_subject.get(lsub, [])
             if not choices:
                 continue
             random.shuffle(choices)
-            placed = False
             days_shuffled = list(range(len(DAYS)))
             random.shuffle(days_shuffled)
+            placed = False
             for d in days_shuffled:
                 for start in (0, 4):
                     mask = slots_mask(start, 4)
@@ -181,9 +168,9 @@ def generate_individual(sections, lab_subjects, th_opts, lab_opts, subject_expec
                 if placed:
                     break
 
-    # Theory placement
-    faculty_load = defaultdict(int)
-    room_load = defaultdict(int)
+    # Place theories
+    th_opts = th_opts or [{"type": "theory", "subject": "GEN", "faculty": "TBD", "room": "R1"}]
+    faculty_load, room_load = defaultdict(int), defaultdict(int)
 
     for sec in sections:
         for d, row in enumerate(indiv[sec]):
@@ -197,17 +184,16 @@ def generate_individual(sections, lab_subjects, th_opts, lab_opts, subject_expec
                     best_opt, best_score = None, None
                     for th in candidates:
                         subj_name = th["subject"]
-                        expected = subject_expected_map.get(subj_name, None)
-                        if expected is not None and per_section_counts[sec].get(subj_name, 0) >= expected:
+                        expected = subject_expected_map.get(subj_name)
+                        if expected and per_section_counts[sec][subj_name] >= expected:
                             continue
                         if is_free(fac_busy, th["faculty"], d, slot_mask) and is_free(room_busy, th["room"], d, slot_mask):
                             score = faculty_load[th["faculty"]] + room_load[th["room"]]
                             if s > 0 and isinstance(row[s-1], dict) and row[s-1].get("subject") == subj_name:
                                 score += 2
                             if best_score is None or score < best_score:
-                                best_score = score
-                                best_opt = th
-                    if best_opt is not None:
+                                best_score, best_opt = score, th
+                    if best_opt:
                         row[s] = best_opt.copy()
                         reserve_slots(fac_busy, best_opt["faculty"], d, slot_mask)
                         reserve_slots(room_busy, best_opt["room"], d, slot_mask)
@@ -223,11 +209,14 @@ def evaluate(indiv, sections, subject_expected_map, lab_subjects_set, max_hours)
     score = 100000
     diag = {"faculty_conflicts": 0, "room_conflicts": 0, "theory_freq_mismatch": 0,
             "continuous_violation": 0, "lab_placement_issues": 0, "lunch_errors": 0}
-    fac_map, room_map = {}, {}
+
+    fac_map = {}
+    room_map = {}
     subj_counts = {sec: {} for sec in sections}
 
     for sec in sections:
-        for d, row in enumerate(indiv[sec]):
+        grid = indiv[sec]
+        for d, row in enumerate(grid):
             if not any(cell == "LUNCH" for cell in row):
                 diag["lunch_errors"] += 1
                 score -= 1000
@@ -235,13 +224,17 @@ def evaluate(indiv, sections, subject_expected_map, lab_subjects_set, max_hours)
                 if cell == "LUNCH":
                     continue
                 if not isinstance(cell, dict):
+                    # invalid cell slot
                     score -= 200
                     continue
-                subj, fac, room = cell["subject"], cell["faculty"], cell["room"]
+                subj = cell["subject"]
+                fac = cell["faculty"]
+                room = cell["room"]
                 fac_map.setdefault((d, s), []).append(fac)
                 room_map.setdefault((d, s), []).append(room)
                 subj_counts[sec][subj] = subj_counts[sec].get(subj, 0) + 1
 
+    # conflicts
     for facs in fac_map.values():
         if len(facs) != len(set(facs)):
             diag["faculty_conflicts"] += 1
@@ -251,6 +244,7 @@ def evaluate(indiv, sections, subject_expected_map, lab_subjects_set, max_hours)
             diag["room_conflicts"] += 1
             score -= 150000
 
+    # theory frequency (use subject_expected_map; skip lab_subjects_set)
     for sec, counts in subj_counts.items():
         for subj, cnt in counts.items():
             if subj in lab_subjects_set:
@@ -261,21 +255,26 @@ def evaluate(indiv, sections, subject_expected_map, lab_subjects_set, max_hours)
                 diag["theory_freq_mismatch"] += diff
                 score -= 200 * diff
 
+    # continuous teaching penalty
     for sec in sections:
         for row in indiv[sec]:
-            run, fac = 0, None
+            run = 0
+            fac = None
             for cell in row:
                 if cell == "LUNCH" or not isinstance(cell, dict):
-                    run, fac = 0, None
+                    fac = None
+                    run = 0
                     continue
                 if cell["faculty"] == fac:
                     run += 1
                 else:
-                    fac, run = cell["faculty"], 1
+                    fac = cell["faculty"]
+                    run = 1
                 if run > max_hours:
                     diag["continuous_violation"] += 1
                     score -= 1000 * (run - max_hours)
 
+    # lab placement checks (4 contiguous slots and start at 0 or 4)
     for sec in sections:
         for row in indiv[sec]:
             lab_slots = [i for i, c in enumerate(row) if isinstance(c, dict) and c.get("type") == "lab"]
@@ -287,6 +286,7 @@ def evaluate(indiv, sections, subject_expected_map, lab_subjects_set, max_hours)
 
     if diag["faculty_conflicts"] or diag["room_conflicts"]:
         return -1_000_000, diag
+
     return score, diag
 
 # ---------------------------
@@ -300,26 +300,83 @@ def tournament(pop, scores, k):
     return pop[best]
 
 def crossover(p1, p2):
-    c1, c2 = {}, {}
+    child1, child2 = {}, {}
     for sec in p1.keys():
         if random.random() < 0.5:
-            c1[sec] = copy.deepcopy(p1[sec])
-            c2[sec] = copy.deepcopy(p2[sec])
+            child1[sec] = copy.deepcopy(p1[sec])
+            child2[sec] = copy.deepcopy(p2[sec])
         else:
-            c1[sec] = copy.deepcopy(p2[sec])
-            c2[sec] = copy.deepcopy(p1[sec])
-    return c1, c2
+            child1[sec] = copy.deepcopy(p2[sec])
+            child2[sec] = copy.deepcopy(p1[sec])
+    return child1, child2
 
 def mutation(individual, th_opts, lab_opts, mutation_rate=0.12):
+    """
+    Simple mutation:
+      - With some probability, swap two theory slots in a section.
+      - With a smaller chance, attempt to move a lab block to another valid day/start (if available).
+    This is intentionally lightweight but introduces diversity.
+    """
+    for sec, grid in individual.items():
+        # swap theory slots
+        if random.random() < mutation_rate:
+            # collect theory-slot coordinates
+            theory_coords = []
+            for d, row in enumerate(grid):
+                for s, cell in enumerate(row):
+                    if isinstance(cell, dict) and cell.get("type") == "theory":
+                        theory_coords.append((d, s))
+            if len(theory_coords) >= 2:
+                a, b = random.sample(theory_coords, 2)
+                da, sa = a; db, sb = b
+                grid[da][sa], grid[db][sb] = grid[db][sb], grid[da][sa]
+
+        # attempt to move a lab block
+        if random.random() < (mutation_rate * 0.5):
+            # find lab blocks in this section
+            for d, row in enumerate(grid):
+                # detect a lab block start
+                for start in (0, 4):
+                    if start + 3 < SLOTS_PER_DAY and all(isinstance(row[s], dict) and row[s].get("type") == "lab" for s in range(start, start+4)):
+                        current_lab = row[start]["subject"]
+                        current_fac = row[start]["faculty"]
+                        current_room = row[start]["room"]
+                        # try to move to another day/start where that room and faculty are free
+                        for d2 in range(len(DAYS)):
+                            if d2 == d:
+                                continue
+                            mask = slots_mask(start, 4)
+                            # check occupancy by scanning row (quick check: ensure target slots are None)
+                            target_row = grid[d2]
+                            if any(isinstance(target_row[s], dict) or target_row[s] == "LUNCH" for s in range(start, start+4)):
+                                continue
+                            # move block: clear old slots and set new
+                            for s in range(start, start+4):
+                                grid[d][s] = None
+                            # place new block with same faculty/room/subject
+                            for s in range(start, start+4):
+                                grid[d2][s] = {"type":"lab","subject":current_lab,"faculty":current_fac,"room":current_room}
+                            # ensure lunches
+                            ensure_lunch(grid[d], None)
+                            ensure_lunch(grid[d2], start)
+                            # done one mutation for this section
+                            break
+                        # break outer loop after handling one block
+                        break
     return individual
 
 # ---------------------------
 # GA runner
 # ---------------------------
 def run_ga(sections, subjects, faculty, th_rooms, lab_rooms, weekly_count, max_hours, cfg):
+    # Seeding
     if cfg.seed is not None:
         random.seed(cfg.seed)
         np.random.seed(cfg.seed)
+    else:
+        seed_val = int(time.time_ns() ^ (id(cfg) & 0xFFFF))
+        random.seed(seed_val)
+        np.random.seed(seed_val & 0xFFFFFFFF)
 
     subject_expected_map = {s["name"]: (s.get("hours_per_week") or weekly_count) for s in subjects}
     th_opts, lab_opts = build_options(subjects, faculty, th_rooms, lab_rooms)
@@ -328,8 +385,8 @@ def run_ga(sections, subjects, faculty, th_rooms, lab_rooms, weekly_count, max_h
     lab_subs = [s["name"] for s in subjects if s["type"] == "lab"]
     lab_subjects_set = set(lab_subs)
 
-    pop = [generate_individual(section_list, lab_subs, th_opts, lab_opts, subject_expected_map, (cfg.seed or 0) + i)
-           for i in range(cfg.population_size)]
+    pop = [generate_individual(section_list, lab_subs, th_opts, lab_opts, subject_expected_map)
+           for _ in range(cfg.population_size)]
 
     best, best_score = None, -1e12
     start_time = time.time()
@@ -344,22 +401,23 @@ def run_ga(sections, subjects, faculty, th_rooms, lab_rooms, weekly_count, max_h
 
         logging.info(f"Gen {gen+1}/{cfg.generations} best_score={best_score:.0f}")
         if best_score > 90000:
-            logging.info(f"Early stop at generation {gen+1}")
             break
 
         new_pop = []
         while len(new_pop) < cfg.population_size:
-            p1, p2 = tournament(pop, scores, cfg.tournament_k), tournament(pop, scores, cfg.tournament_k)
+            p1 = tournament(pop, scores, cfg.tournament_k)
+            p2 = tournament(pop, scores, cfg.tournament_k)
             c1, c2 = crossover(p1, p2)
-            c1, c2 = mutation(c1, th_opts, lab_opts, cfg.mutation_rate), mutation(c2, th_opts, lab_opts, cfg.mutation_rate)
-            new_pop.append(c1)
+            new_pop.append(mutation(copy.deepcopy(c1), th_opts, lab_opts, cfg.mutation_rate))
             if len(new_pop) < cfg.population_size:
-                new_pop.append(c2)
+                new_pop.append(mutation(copy.deepcopy(c2), th_opts, lab_opts, cfg.mutation_rate))
         pop = new_pop
 
     elapsed = time.time() - start_time
     logging.info(f"GA finished in {elapsed:.1f}s best_score={best_score:.0f}")
+
     return best, best_score, evaluate(best, section_list, subject_expected_map, lab_subjects_set, max_hours)[1]
+
 
 # ---------------------------
 # Render HTML
@@ -406,7 +464,8 @@ def render_html(solution):
 # ---------------------------
 @app.post("/generate")
 def generate(req: SchedulerRequest):
-    subjects, faculty = [s.dict() for s in req.subjects], [f.dict() for f in req.faculty]
+    subjects = [s.dict() for s in req.subjects]
+    faculty = [f.dict() for f in req.faculty]
     best_indiv, best_score, diagnostics = run_ga(
         req.sections, subjects, faculty, req.theory_rooms, req.lab_rooms,
         req.weeklyTheoryCount, req.maxContinuousHours, req.gen_config
