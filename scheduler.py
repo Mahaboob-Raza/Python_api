@@ -9,6 +9,8 @@ import logging
 import re
 from collections import defaultdict
 
+from datetime import datetime, timedelta
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
 app = FastAPI(title="Timetable GA Scheduler")
@@ -16,6 +18,20 @@ app = FastAPI(title="Timetable GA Scheduler")
 @app.get("/")
 def root():
     return {"status": "ok"}
+
+
+def build_slot_labels(start_time="10:00", duration=50, slots_per_day=7, lunch_after=3):
+    labels = {}
+    t = datetime.strptime(start_time, "%H:%M")
+    for i in range(slots_per_day):
+        if i == lunch_after:
+            labels[i] = "Lunch Break"
+        else:
+            end = t + timedelta(minutes=duration)
+            labels[i] = f"{t.strftime('%H:%M')}–{end.strftime('%H:%M')}"
+            t = end
+    return labels
+
 
 # ---------------------------
 # Request payload models
@@ -422,18 +438,28 @@ def run_ga(sections, subjects, faculty, th_rooms, lab_rooms, weekly_count, max_h
 # ---------------------------
 # Render HTML
 # ---------------------------
-def render_html(solution):
+def render_html(solution, start_time="10:00", duration=50, slots_per_day=7, lunch_after=3):
+    # build slot labels dynamically
+    slot_labels = build_slot_labels(start_time, duration, slots_per_day, lunch_after)
+
     html_parts = []
     for sec, grid in solution.items():
-        html_parts.append(f"<div class='timetable-container'><table class='tt-table' border='1' cellpadding='6'>")
-        html_parts.append(f"<thead><tr><th colspan='9'>{sec} Timetable</th></tr></thead>")
-        header = "<tr><th>Day</th>" + "".join([f"<th>Unit {i}</th>" for i in range(SLOTS_PER_DAY)]) + "</tr>"
+        html_parts.append(
+            f"<div class='timetable-container'><table class='tt-table' border='1' cellpadding='6'>"
+        )
+        html_parts.append(
+            f"<thead><tr><th colspan='{slots_per_day+1}'>{sec} Timetable</th></tr></thead>"
+        )
+
+        # header row with slot times
+        header = "<tr><th>Day</th>" + "".join([f"<th>{slot_labels[i]}</th>" for i in range(slots_per_day)]) + "</tr>"
         html_parts.append(header)
+
         html_parts.append("<tbody>")
         for di, day in enumerate(DAYS):
             row_html = f"<tr><td>{day}</td>"
             s = 0
-            while s < SLOTS_PER_DAY:
+            while s < slots_per_day:
                 cell = grid[di][s]
                 if cell == "LUNCH":
                     row_html += "<td>LUNCH</td>"
@@ -441,7 +467,11 @@ def render_html(solution):
                     continue
                 if isinstance(cell, dict) and cell.get("type") == "lab":
                     start, span = s, 0
-                    while s < SLOTS_PER_DAY and isinstance(grid[di][s], dict) and grid[di][s].get("type") == "lab":
+                    while (
+                        s < slots_per_day
+                        and isinstance(grid[di][s], dict)
+                        and grid[di][s].get("type") == "lab"
+                    ):
                         span += 1
                         s += 1
                     label = initials(cell.get("faculty", ""))
