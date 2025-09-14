@@ -8,7 +8,6 @@ import time
 import logging
 import re
 from collections import defaultdict
-
 from datetime import datetime, timedelta
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -20,7 +19,15 @@ def root():
     return {"status": "ok"}
 
 
-def build_slot_labels(start_time="10:00", duration=50, slots_per_day=7, lunch_after=3):
+# ---------------------------
+# Slot Labels
+# ---------------------------
+def build_slot_labels(start_time="10:00", duration=50, slots_per_day=8):
+    """
+    Build slot labels as pure time ranges.
+    - Always return 8 slots per day.
+    - No 'Lunch Break' text, only times.
+    """
     labels = {}
     t = datetime.strptime(start_time, "%H:%M")
     for i in range(slots_per_day):
@@ -28,6 +35,7 @@ def build_slot_labels(start_time="10:00", duration=50, slots_per_day=7, lunch_af
         labels[i] = f"{t.strftime('%H:%M')}–{end.strftime('%H:%M')}"
         t = end
     return labels
+
 
 # ---------------------------
 # Request payload models
@@ -59,11 +67,13 @@ class SchedulerRequest(BaseModel):
     maxContinuousHours: int = 4
     gen_config: GenConfig = Field(default_factory=GenConfig)
 
+
 # ---------------------------
 # Globals
 # ---------------------------
 DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
 SLOTS_PER_DAY = 8
+
 
 def initials(name: str) -> str:
     if not name:
@@ -75,6 +85,7 @@ def initials(name: str) -> str:
     if len(parts) == 1:
         return parts[0][:2].upper()
     return "".join([p[0].upper() for p in parts])
+
 
 # ---------------------------
 # Option builders
@@ -104,6 +115,7 @@ def build_options(subjects, faculty, theory_rooms, lab_rooms):
                     labs.append({"type": "lab", "subject": subj_name, "faculty": fac, "room": room})
     return theory, labs
 
+
 # ---------------------------
 # Bitmask helpers
 # ---------------------------
@@ -112,6 +124,7 @@ def slots_mask(start:int, length:int) -> int:
 
 def single_slot_mask(s:int) -> int:
     return 1 << s
+
 
 # ---------------------------
 # Grid helpers
@@ -129,6 +142,7 @@ def ensure_lunch(row, lab_start=None):
     if row[lunch_idx] is None:
         row[lunch_idx] = "LUNCH"
 
+
 # ---------------------------
 # Occupancy helpers
 # ---------------------------
@@ -142,6 +156,7 @@ def reserve_slots(occ_map, key, day, mask):
 
 def is_free(occ_map, key, day, mask):
     return key not in occ_map or (occ_map[key][day] & mask) == 0
+
 
 # ---------------------------
 # Individual generator
@@ -434,9 +449,9 @@ def run_ga(sections, subjects, faculty, th_rooms, lab_rooms, weekly_count, max_h
 # ---------------------------
 # Render HTML
 # ---------------------------
-def render_html(solution, start_time="10:00", duration=50, slots_per_day=7, lunch_after=3):
-    # build slot labels dynamically
-    slot_labels = build_slot_labels(start_time, duration, slots_per_day, lunch_after)
+def render_html(solution, start_time="10:00", duration=50, slots_per_day=8):
+    # build slot labels dynamically (pure times)
+    slot_labels = build_slot_labels(start_time, duration, slots_per_day)
 
     html_parts = []
     for sec, grid in solution.items():
@@ -484,6 +499,7 @@ def render_html(solution, start_time="10:00", duration=50, slots_per_day=7, lunc
             html_parts.append(row_html)
         html_parts.append("</tbody></table></div>")
     return "\n".join(html_parts)
+
 
 # ---------------------------
 # API endpoint
