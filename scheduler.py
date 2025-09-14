@@ -24,14 +24,10 @@ def build_slot_labels(start_time="10:00", duration=50, slots_per_day=7, lunch_af
     labels = {}
     t = datetime.strptime(start_time, "%H:%M")
     for i in range(slots_per_day):
-        if i == lunch_after:
-            labels[i] = "Lunch Break"
-        else:
-            end = t + timedelta(minutes=duration)
-            labels[i] = f"{t.strftime('%H:%M')}–{end.strftime('%H:%M')}"
-            t = end
+        end = t + timedelta(minutes=duration)
+        labels[i] = f"{t.strftime('%H:%M')}–{end.strftime('%H:%M')}"
+        t = end
     return labels
-
 
 # ---------------------------
 # Request payload models
@@ -60,7 +56,7 @@ class SchedulerRequest(BaseModel):
     theory_rooms: List[str]
     lab_rooms: List[str]
     weeklyTheoryCount: int = 4
-    maxContinuousHours: int = 3
+    maxContinuousHours: int = 4
     gen_config: GenConfig = Field(default_factory=GenConfig)
 
 # ---------------------------
